@@ -1,7 +1,10 @@
 from flask import Flask, request, jsonify
 import os
 import logging
-from typing import Dict, Union
+from typing import Dict
+
+from werkzeug.datastructures import FileStorage
+from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
 
@@ -10,16 +13,15 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-UPLOAD_DIR = "./uploads"  # Директория где хранятся файлы
-ALLOWED_EXTENSIONS = {'.dicom'}
+ALLOWED_EXTENSIONS = {'.dcm'}
 
 
-def getPrediction(file_path: str) -> Dict[int, float]:
+def getPrediction(file: FileStorage) -> Dict[int, float]:
     """
     Метод для получения предсказания по файлу.
 
     Args:
-        file_path: Путь к файлу
+        file: файл .dcm
 
     Returns:
         Словарь с ключами 0 и 1 и значениями типа float
@@ -47,11 +49,11 @@ def getPrediction(file_path: str) -> Dict[int, float]:
         }
 
     except Exception as e:
-        logger.error(f"Ошибка при обработке файла {file_path}: {e}")
+        logger.error(f"Ошибка при обработке файла {file.filename}: {e}")
         raise
 
 
-@app.route('/prediction', methods=['GET'])
+@app.route('/prediction', methods=['POST'])
 def get_prediction():
     """
     Ручка для получения предсказания по файлу.
@@ -63,37 +65,23 @@ def get_prediction():
         JSON с результатом предсказания
     """
     try:
-        # Получаем имя файла из URL параметров
-        filename = request.args.get('filename')
+        if 'file' not in request.files:
+            return jsonify(error="no file part"), 400
 
-        if not filename:
-            return jsonify({
-                'error': 'Параметр filename обязателен'
-            }), 400
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify(error="empty filename"), 400
+
+        filename = secure_filename(file.filename)
 
         file_extension = os.path.splitext(filename)[1].lower()
         if file_extension not in ALLOWED_EXTENSIONS:
             return jsonify({
-                'error': 'Допустимы только файлы с расширением .dicom'
-            }), 400
-
-        # Формируем полный путь к файлу
-        file_path = os.path.join(UPLOAD_DIR, filename)
-
-        # Проверяем существование файла
-        if not os.path.exists(file_path):
-            return jsonify({
-                'error': f'Файл {filename} не найден'
-            }), 404
-
-        # Проверяем что это файл, а не директория
-        if not os.path.isfile(file_path):
-            return jsonify({
-                'error': f'{filename} не является файлом'
+                'error': 'Допустимы только файлы с расширением .dcm'
             }), 400
 
         # Получаем предсказание
-        prediction_dict = getPrediction(file_path)
+        prediction_dict = getPrediction(file)
 
         # Проверяем формат ответа
         if not isinstance(prediction_dict, dict) or 1 not in prediction_dict:
@@ -138,8 +126,5 @@ def internal_error(error):
 
 
 if __name__ == '__main__':
-    # Создаем директорию для файлов, если она не существует
-    os.makedirs(UPLOAD_DIR, exist_ok=True)
-
     # Запускаем сервер
     app.run(host='0.0.0.0', port=8081, debug=True)
