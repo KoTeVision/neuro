@@ -34,7 +34,7 @@ def getPrediction(file: FileStorage) -> Dict[int, float]:
         # TODO: Здесь добавить реальную логику обработки файла
         # Будет приходить арихив zip, надо разархивировать, получить предсказание и новый массив
         # Массив превратить в html и вызвать save_file_to_s3(file, filename)
-
+        #
         # Mock предсказание для демонстрации
         import random
         prediction_0 = random.uniform(0.1, 0.6)
