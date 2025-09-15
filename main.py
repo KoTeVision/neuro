@@ -32,11 +32,8 @@ def getPrediction(file: FileStorage) -> Dict[int, float]:
     # Пример: загрузка и обработка DICOM файла
     try:
         # TODO: Здесь добавить реальную логику обработки файла
-        # Например:
-        # import pydicom
-        # dicom_data = pydicom.dcmread(file_path)
-        # processed_data = preprocess_dicom(dicom_data)
-        # prediction = model.predict(processed_data)
+        # Будет приходить арихив zip, надо разархивировать, получить предсказание и новый массив
+        # Массив превратить в html и вызвать save_file_to_s3(file, filename)
 
         # Mock предсказание для демонстрации
         import random
