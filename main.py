@@ -1,4 +1,4 @@
-import torch
+import torch  # TODO: занести импорты в requirements.txt
 from torch.nn import MSELoss
 from monai.transforms import (
     Compose, LoadImaged, EnsureChannelFirstd, ScaleIntensityRanged,
@@ -15,11 +15,10 @@ import plotly.io as pio  # Для экспорта или отображения
 from flask import Flask, request, jsonify
 import os
 import logging
-from typing import Dict
+from typing import Dict, Tuple
 
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
-
 
 app = Flask(__name__)
 
@@ -28,7 +27,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Конфигурация
-ALLOWED_EXTENSIONS = {'.dcm'}
+ALLOWED_EXTENSIONS = {'.zip'}
 
 # Временная папка для разархивирования ZIP
 TEMP_DIR = 'temp_unzip'
@@ -39,7 +38,7 @@ model_path = 'swin_unetr_norm_96.pt'
 
 # Загрузка модели (загружается один раз при запуске сервера)
 model = SwinUNETR(
-    in_channels=1,   # Grayscale CT
+    in_channels=1,  # Grayscale CT
     out_channels=1,  # Реконструкция
     feature_size=48,  # Базовый размер фич
     use_checkpoint=True  # Для экономии памяти
@@ -72,9 +71,11 @@ threshold = 0.02  # Пример; подставь свой расчёт
 transforms = Compose([
     LoadImaged(keys=['image'], reader=PydicomReader(sort_fn=None)),  # Чтение DICOM как 3D volume
     EnsureChannelFirstd(keys=['image']),  # Добавляем канал
-    ScaleIntensityRanged(keys=['image'], a_min=-1000, a_max=1000, b_min=0.0, b_max=1.0, clip=True),  # Нормализация HU для КТ
+    ScaleIntensityRanged(keys=['image'], a_min=-1000, a_max=1000, b_min=0.0, b_max=1.0, clip=True),
+    # Нормализация HU для КТ
     ToTensord(keys=['image'])
 ])
+
 
 def unzip_file(zip_file: FileStorage) -> str:
     """
@@ -99,6 +100,7 @@ def unzip_file(zip_file: FileStorage) -> str:
     os.remove(zip_path)
 
     return unzip_path  # Путь к папке с DICOM-серией
+
 
 # Функция для наложения маски на срез с прозрачностью
 def overlay_mask_on_slice(slice_img, slice_mask, alpha=0.5):
@@ -127,7 +129,6 @@ def overlay_mask_on_slice(slice_img, slice_mask, alpha=0.5):
     overlaid = np.clip(overlaid, 0, 1)  # Обрезаем финальный результат до [0, 1]
 
     return overlaid
-
 
 
 def generate_plotly_fig(original, reconstructed, error_map, threshold=0.02):
@@ -198,7 +199,7 @@ def generate_plotly_fig(original, reconstructed, error_map, threshold=0.02):
     return fig  # Возвращаем фигуру для сохранения в HTML
 
 
-def getPrediction(file: FileStorage) -> Dict[int, float]:
+def getPrediction(file: FileStorage) -> Tuple[Dict[int, float], str]:
     """
     Метод для получения предсказания по файлу.
 
@@ -236,7 +237,7 @@ def getPrediction(file: FileStorage) -> Dict[int, float]:
         error = loss_function(reconstructed, image).item()
 
         # Классификация
-        prediction_0 = 1.0 if error > threshold else 0.0
+        prediction_0 = 1.0 if error > threshold else 0.0  # TODO: возвращать вероятность нормы и патлологии, а не результат 0 или 1
         prediction_1 = 1.0 - prediction_0  # 0 - норма, 1 - патология
 
         # Генерация HTML с визуализацией, если патология
@@ -245,11 +246,11 @@ def getPrediction(file: FileStorage) -> Dict[int, float]:
                                   threshold)  # Твоя функция interactive_visualize, но возвращает fig
 
         # Или так (сохраняет html в память)
-        html_path = os.path.join('static', 'visualization.html')  # Сохраняем в static для доступа
-        pio.write_html(fig, html_path)
+        # html_path = os.path.join('static', 'visualization.html')  # Сохраняем в static для доступа
+        # pio.write_html(fig, html_path)
 
         # Или так (не сохраняется с тупа строкой в формате html передает дальше) должно быть шустрее
-        # html_content = pio.to_html(fig, full_html=True)  # Полный HTML как строка
+        html_content = pio.to_html(fig, full_html=True)  # Полный HTML как строка
         # s3_url = save_to_s3(html_content, 'your-bucket-name', 'visualization.html')  # Замени 'your-bucket-name'
         # html_path = s3_url if s3_url else None
 
@@ -264,23 +265,11 @@ def getPrediction(file: FileStorage) -> Dict[int, float]:
         return {
             0: prediction_0,
             1: prediction_1,
-            'html_path': html_path if html_path else None  # Возвращаем путь к HTML, если патология
-        }
+        }, html_content
 
         # TODO: Здесь добавить реальную логику обработки файла
         # Будет приходить арихив zip, надо разархивировать, получить предсказание и новый массив
         # Массив превратить в html и вызвать save_file_to_s3(file, filename)
-
-
-        # # Mock предсказание для демонстрации
-        # import random
-        # prediction_0 = random.uniform(0.1, 0.6)
-        # prediction_1 = 1.0 - prediction_0
-
-        return {
-            0: prediction_0,
-            1: prediction_1
-        }
 
     except Exception as e:
         logger.error(f"Ошибка при обработке файла {file.filename}: {e}")
@@ -311,11 +300,11 @@ def get_prediction():
         file_extension = os.path.splitext(filename)[1].lower()
         if file_extension not in ALLOWED_EXTENSIONS:
             return jsonify({
-                'error': 'Допустимы только файлы с расширением .dcm'
+                'error': 'Допустимы только файлы с расширением .zip'
             }), 400
 
         # Получаем предсказание
-        prediction_dict = getPrediction(file)
+        prediction_dict, html_content = getPrediction(file)
 
         # Проверяем формат ответа
         if not isinstance(prediction_dict, dict) or 1 not in prediction_dict:
@@ -330,7 +319,8 @@ def get_prediction():
         logger.info(f"Обработан файл {filename}, результат: {result}")
 
         return jsonify({
-            'result': result
+            'result': result,
+            'html_content': html_content
         })
 
     except Exception as e:
