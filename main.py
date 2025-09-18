@@ -11,6 +11,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go  # Для интерактивной визуализации
 import plotly.io as pio  # Для экспорта или отображения
+import zipfile
+import shutil  # Для удаления папок
 
 from flask import Flask, request, jsonify
 import os
@@ -81,25 +83,9 @@ transforms = Compose([
 ])
 
 
-def find_dicom_dir(unzip_path: str) -> str:
-    """
-    Рекурсивно находит папку с .dcm файлами внутри unzip_path.
-    """
-    for root, dirs, files in os.walk(unzip_path):
-        # Пропускаем служебные папки macOS
-        if '__MACOSX' in root:
-            continue
-        # Кодируем пути для избежания encoding-ошибок
-        root = os.fsencode(root).decode('utf-8', errors='ignore')
-        dcm_files = [f for f in files if f.lower().endswith('.dcm')]
-        if dcm_files:
-            return root  # Возвращаем папку с .dcm
-    raise ValueError("Не найдено .dcm файлов в ZIP-архиве.")
-
-
 def unzip_file(zip_file: FileStorage) -> str:
     """
-    Разархивирует ZIP-файл во временную папку.
+    Разархивирует ZIP-файл во временную папку и удаляет __MACOSX.
 
     Args:
         zip_file: ZIP-файл
@@ -107,14 +93,14 @@ def unzip_file(zip_file: FileStorage) -> str:
     Returns:
         Путь к разархивированной папке с DICOM
     """
-    import zipfile
+
     zip_filename = secure_filename(zip_file.filename)
     zip_path = os.path.join(TEMP_DIR, zip_filename)
     zip_file.save(zip_path)
 
     unzip_path = os.path.join(TEMP_DIR, os.path.splitext(zip_filename)[0])
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        # Игнорируем __MACOSX при извлечении (опционально, но помогает)
+        # Извлекаем только не-__MACOSX
         for member in zip_ref.namelist():
             if '__MACOSX' not in member:
                 zip_ref.extract(member, unzip_path)
@@ -122,8 +108,45 @@ def unzip_file(zip_file: FileStorage) -> str:
     # Удаляем ZIP после разархивирования
     os.remove(zip_path)
 
+    # Рекурсивно удаляем __MACOSX, если она создалась
+    for root, dirs, files in os.walk(unzip_path, topdown=False):
+        if '__MACOSX' in root:
+            shutil.rmtree(root)
+            print(f"Удалена папка __MACOSX: {root}")  # Дебаггинг
+
     return unzip_path  # Путь к корню разархивированного ZIP
 
+
+def find_dicom_dir(unzip_path: str) -> str:
+    """
+    Рекурсивно находит папку с .dcm файлами внутри unzip_path.
+    """
+    # Сначала проверяем корень (твой случай)
+    root_files = os.listdir(unzip_path)
+    dcm_files_root = [f for f in root_files if f.lower().endswith('.dcm')]
+    if dcm_files_root:
+        print(f"Найдена DICOM в корне: {unzip_path} с {len(dcm_files_root)} файлами")  # Дебаггинг
+        return unzip_path
+
+    # Рекурсивный поиск в подпапках
+    for root, dirs, files in os.walk(unzip_path):
+        # Пропускаем служебные папки macOS
+        if '__MACOSX' in root:
+            continue
+        # Декодируем пути с игнором ошибок кодировки
+        try:
+            root_decoded = os.fsdecode(root).decode('utf-8', errors='ignore')
+            print(f"Проверяем папку: {root_decoded}")  # Дебаггинг
+        except:
+            root_decoded = root
+            continue  # Пропускаем повреждённые пути
+
+        dcm_files = [f for f in files if f.lower().endswith('.dcm')]
+        if dcm_files:
+            print(f"Найдена DICOM-папка: {root_decoded} с {len(dcm_files)} файлами")  # Дебаггинг
+            return root_decoded  # Возвращаем папку с .dcm
+
+    raise ValueError("Не найдено .dcm файлов в ZIP-архиве.")
 
 # Функция для наложения маски на срез с прозрачностью
 def overlay_mask_on_slice(slice_img, slice_mask, alpha=0.5):
