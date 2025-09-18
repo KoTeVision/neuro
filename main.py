@@ -86,6 +86,11 @@ def find_dicom_dir(unzip_path: str) -> str:
     Рекурсивно находит папку с .dcm файлами внутри unzip_path.
     """
     for root, dirs, files in os.walk(unzip_path):
+        # Пропускаем служебные папки macOS
+        if '__MACOSX' in root:
+            continue
+        # Кодируем пути для избежания encoding-ошибок
+        root = os.fsencode(root).decode('utf-8', errors='ignore')
         dcm_files = [f for f in files if f.lower().endswith('.dcm')]
         if dcm_files:
             return root  # Возвращаем папку с .dcm
@@ -109,7 +114,10 @@ def unzip_file(zip_file: FileStorage) -> str:
 
     unzip_path = os.path.join(TEMP_DIR, os.path.splitext(zip_filename)[0])
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(unzip_path)
+        # Игнорируем __MACOSX при извлечении (опционально, но помогает)
+        for member in zip_ref.namelist():
+            if '__MACOSX' not in member:
+                zip_ref.extract(member, unzip_path)
 
     # Удаляем ZIP после разархивирования
     os.remove(zip_path)
