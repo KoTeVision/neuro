@@ -81,6 +81,17 @@ transforms = Compose([
 ])
 
 
+def find_dicom_dir(unzip_path: str) -> str:
+    """
+    Рекурсивно находит папку с .dcm файлами внутри unzip_path.
+    """
+    for root, dirs, files in os.walk(unzip_path):
+        dcm_files = [f for f in files if f.lower().endswith('.dcm')]
+        if dcm_files:
+            return root  # Возвращаем папку с .dcm
+    raise ValueError("Не найдено .dcm файлов в ZIP-архиве.")
+
+
 def unzip_file(zip_file: FileStorage) -> str:
     """
     Разархивирует ZIP-файл во временную папку.
@@ -103,7 +114,7 @@ def unzip_file(zip_file: FileStorage) -> str:
     # Удаляем ZIP после разархивирования
     os.remove(zip_path)
 
-    return unzip_path  # Путь к папке с DICOM-серией
+    return unzip_path  # Путь к корню разархивированного ZIP
 
 
 # Функция для наложения маски на срез с прозрачностью
@@ -221,8 +232,11 @@ def getPrediction(file: FileStorage) -> Tuple[Dict[int, float], str]:
         # Разархивировать ZIP
         unzip_path = unzip_file(file)
 
+        # Найти папку с .dcm
+        dicom_dir = find_dicom_dir(unzip_path)
+
         # Подготовка данных (используем unzip_path как test_scan_path)
-        test_data = [{'image': unzip_path}]
+        test_data = [{'image': dicom_dir}]
         transformed_data = transforms(test_data[0])
         image = transformed_data['image'].unsqueeze(0).to(device)  # [1, 1, H, W, D]
 
