@@ -50,7 +50,11 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # Загрузка весов модели (с фильтрацией совместимых слоёв)
 model_dict = model.state_dict()  # Текущий state_dict модели
-pretrained_dict = torch.load(model_path)  # Загружаем обученный state_dict
+pretrained_dict = torch.load(
+    model_path,
+    map_location=torch.device('cpu'),
+    weights_only=True
+)  # Загружаем обученный state_dict
 
 # Фильтруем только совместимые ключи (по имени и форме)
 pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict and v.shape == model_dict[k].shape}
