@@ -12,7 +12,7 @@ import numpy as np
 
 
 def get_s3_client():
-    endpoint_url = os.getenv("S3_ENDPOINT_URL")
+    endpoint_url = os.getenv("S3_ENDPOINT")
     region = os.getenv("AWS_REGION", "us-east-1")
     signature_version = os.getenv("S3_SIGNATURE_VERSION", "s3v4")
     config = Config(signature_version=signature_version, s3={"addressing_style": "path"})
@@ -21,8 +21,8 @@ def get_s3_client():
         "s3",
         endpoint_url=endpoint_url,
         region_name=region,
-        aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
+        aws_access_key_id=os.getenv("S3_ACCESS_KEY_ID"),
+        aws_secret_access_key=os.getenv("S3_SECRET_ACCESS_KEY"),
         config=config,
     )
     return s3
