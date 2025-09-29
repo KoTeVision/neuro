@@ -1,4 +1,5 @@
 import torch  # TODO: занести импорты в requirements.txt
+from botocore.exceptions import ClientError
 from torch.nn import MSELoss
 from monai.transforms import (
     Compose, LoadImaged, EnsureChannelFirstd, ScaleIntensityRanged,
@@ -7,18 +8,16 @@ from monai.transforms import (
 from monai.networks.nets import SwinUNETR  # Импорт SwinUNETR
 from monai.inferers import sliding_window_inference
 from monai.data import PydicomReader
-import numpy as np
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go  # Для интерактивной визуализации
-import plotly.io as pio  # Для экспорта или отображения
 
-from flask import Flask, request, jsonify
-import os
+from flask import Flask, jsonify
 import logging
-from typing import Dict, Tuple
 
-from werkzeug.datastructures import FileStorage
-from werkzeug.utils import secure_filename
+from werkzeug.exceptions import BadRequest
+
+from save_visuals import save_visuals_to_s3
+from utils import *
 
 app = Flask(__name__)
 
@@ -28,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 # Конфигурация
 ALLOWED_EXTENSIONS = {'.zip'}
+
+S3_BUCKET_NAME = "kote-uploads"
 
 # Временная папка для разархивирования ZIP
 TEMP_DIR = 'temp_unzip'
@@ -76,31 +77,7 @@ transforms = Compose([
     ToTensord(keys=['image'])
 ])
 
-
-def unzip_file(zip_file: FileStorage) -> str:
-    """
-    Разархивирует ZIP-файл во временную папку.
-
-    Args:
-        zip_file: ZIP-файл
-
-    Returns:
-        Путь к разархивированной папке с DICOM
-    """
-    import zipfile
-    zip_filename = secure_filename(zip_file.filename)
-    zip_path = os.path.join(TEMP_DIR, zip_filename)
-    zip_file.save(zip_path)
-
-    unzip_path = os.path.join(TEMP_DIR, os.path.splitext(zip_filename)[0])
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(unzip_path)
-
-    # Удаляем ZIP после разархивирования
-    os.remove(zip_path)
-
-    return unzip_path  # Путь к папке с DICOM-серией
-
+s3 = get_s3_client()
 
 # Функция для наложения маски на срез с прозрачностью
 def overlay_mask_on_slice(slice_img, slice_mask, alpha=0.5):
@@ -199,135 +176,154 @@ def generate_plotly_fig(original, reconstructed, error_map, threshold=0.02):
     return fig  # Возвращаем фигуру для сохранения в HTML
 
 
-def getPrediction(file: FileStorage) -> Tuple[Dict[int, float], str]:
+def getPrediction(filename: str) -> float:
     """
-    Метод для получения предсказания по файлу.
+    Метод для получения предсказания по архиву исследования (zip) в S3.
 
     Args:
-        file: файл .dcm
+        filename: имя файла в S3 бакете 'kote-uploads' БЕЗ расширения .zip
+                  (если передадите 'xxx.zip', тоже отработает)
 
     Returns:
-        Словарь с ключами 0 и 1 и значениями типа float
+        (probability, html_content)
+        probability: float — вероятность патологии в [0..1]
+        html_content: str — HTML с интерактивной визуализацией (такой же, как сохранённый в S3)
     """
-    # Здесь должна быть ваша логика обработки DICOM файла
-    # Пока что возвращаем mock данные
 
-    # Пример: загрузка и обработка DICOM файла
+    # Локальные временные файлы/папки
+    local_zip_path = None
+    unzip_path = None
+
+    # Для путей в S3 используем префикс "<filename>/..."
+    # Если пользователь передал "... .zip", срежем суффикс для каталога
+    s3_prefix = filename[:-4] if filename.endswith(".zip") else filename
+
     try:
-        # Разархивировать ZIP
-        unzip_path = unzip_file(file)
+        # 1) Скачиваем zip из S3
+        local_zip_path = download_zip_from_s3(s3, S3_BUCKET_NAME, filename)
 
-        # Подготовка данных (используем unzip_path как test_scan_path)
+        # 2) Распаковываем
+        unzip_path = unzip_to_temp(local_zip_path)
+
+        # 3) Подготовка данных (используем unzip_path как test_scan_path)
         test_data = [{'image': unzip_path}]
         transformed_data = transforms(test_data[0])
         image = transformed_data['image'].unsqueeze(0).to(device)  # [1, 1, H, W, D]
 
-        # Sliding window inference
+        # 4) Sliding window inference
         with torch.no_grad():
             reconstructed = sliding_window_inference(
                 inputs=image,
-                roi_size=(96, 96, 96),  # Размер патча
+                roi_size=(96, 96, 96),
                 sw_batch_size=4,
                 predictor=model,
                 overlap=0.5
             )
             reconstructed = torch.clamp(reconstructed, min=0.0, max=1.0)
 
-        # Вычисление MSE
+        # 5) Ошибка реконструкции
         error = loss_function(reconstructed, image).item()
 
-        # Классификация
-        prediction_0 = 1.0 if error > threshold else 0.0  # TODO: возвращать вероятность нормы и патлологии, а не результат 0 или 1
-        prediction_1 = 1.0 - prediction_0  # 0 - норма, 1 - патология
+        # 6) Вероятность патологии (один prediction: float)
+        probability_pathology = error_to_probability(error, threshold)
 
-        # Генерация HTML с визуализацией, если патология
+        # 7) Визуализация
         error_map = np.abs(image.cpu().numpy() - reconstructed.cpu().numpy())
-        fig = generate_plotly_fig(image.cpu().numpy(), reconstructed.cpu().numpy(), error_map,
-                                  threshold)  # Твоя функция interactive_visualize, но возвращает fig
 
-        # Или так (сохраняет html в память)
-        # html_path = os.path.join('static', 'visualization.html')  # Сохраняем в static для доступа
-        # pio.write_html(fig, html_path)
+        # 8) Сохранить HTML и PNG-срезы в S3 под "<filename>/..."
+        save_visuals_to_s3(
+            s3=s3,
+            bucket=S3_BUCKET_NAME,
+            prefix=s3_prefix,
+            image_np=image.cpu().numpy(),
+            error_np=error_map
+        )
 
-        # Или так (не сохраняется с тупа строкой в формате html передает дальше) должно быть шустрее
-        html_content = pio.to_html(fig, full_html=True)  # Полный HTML как строка
-        # s3_url = save_to_s3(html_content, 'your-bucket-name', 'visualization.html')  # Замени 'your-bucket-name'
-        # html_path = s3_url if s3_url else None
+        if 'logger' in globals() and logger:
+            logger.info(
+                f"Готово: filename={filename}, error={error:.6f}, probability={probability_pathology:.6f}, "
+                f"S3: s3://{S3_BUCKET_NAME}/{s3_prefix}/visualization.html"
+            )
 
-        # Очистка временной папки
-        for root, dirs, files in os.walk(unzip_path, topdown=False):
-            for name in files:
-                os.remove(os.path.join(root, name))
-            for name in dirs:
-                os.rmdir(os.path.join(root, name))
-        os.rmdir(unzip_path)
-
-        return {
-            0: prediction_0,
-            1: prediction_1,
-        }, html_content
-
-        # TODO: Здесь добавить реальную логику обработки файла
-        # Будет приходить арихив zip, надо разархивировать, получить предсказание и новый массив
-        # Массив превратить в html и вызвать save_file_to_s3(file, filename)
+        return probability_pathology
 
     except Exception as e:
-        logger.error(f"Ошибка при обработке файла {file.filename}: {e}")
+        if 'logger' in globals() and logger:
+            logger.error(f"Ошибка при обработке файла {filename}: {e}")
         raise
+    finally:
+        # Убираем временные файлы
+        if local_zip_path:
+            try:
+                os.remove(local_zip_path)
+            except Exception:
+                pass
+            # Папка, где лежал zip
+            try:
+                zip_dir = os.path.dirname(local_zip_path)
+                safe_rmtree(zip_dir)
+            except Exception:
+                pass
+        if unzip_path:
+            safe_rmtree(unzip_path)
 
 
-@app.route('/prediction', methods=['POST'])
-def get_prediction():
+@app.route('/prediction/<string:filename>', methods=['GET'])
+def get_prediction(filename: str):
     """
-    Ручка для получения предсказания по файлу.
+    GET /prediction/<filename>
+    filename — имя файла в S3 бакете (без .zip);
+               если пришло с .zip — суффикс будет отброшен.
 
-    URL параметры:
-        filename: имя файла для обработки
+    Response (200):
+      { "result": <float 0..1> }
 
-    Returns:
-        JSON с результатом предсказания
+    Errors:
+      400 — некорректное имя
+      404 — файл не найден в S3
+      500 — иные ошибки обработки
     """
     try:
-        if 'file' not in request.files:
-            return jsonify(error="no file part"), 400
+        if not filename:
+            return jsonify(error="filename is required"), 400
 
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify(error="empty filename"), 400
+        # Отрежем .zip, если прислали
+        if filename.lower().endswith(".zip"):
+            filename = filename[:-4]
 
-        filename = secure_filename(file.filename)
+        # Запускаем инференс по имени (скачает <filename>.zip из S3)
+        prediction = getPrediction(filename)
 
-        file_extension = os.path.splitext(filename)[1].lower()
-        if file_extension not in ALLOWED_EXTENSIONS:
-            return jsonify({
-                'error': 'Допустимы только файлы с расширением .zip'
-            }), 400
+        # Валидация результата
+        try:
+            prob = float(prediction)
+        except (TypeError, ValueError):
+            logger.error(f"Неверный формат ответа getPrediction: {prediction!r}")
+            return jsonify(error="prediction format error"), 500
 
-        # Получаем предсказание
-        prediction_dict, html_content = getPrediction(file)
+        if not (0.0 <= prob <= 1.0):
+            logger.error(f"Выход за диапазон вероятности: {prob}")
+            return jsonify(error="prediction out of range"), 500
 
-        # Проверяем формат ответа
-        if not isinstance(prediction_dict, dict) or 1 not in prediction_dict:
-            logger.error(f"Неверный формат ответа от getPrediction: {prediction_dict}")
-            return jsonify({
-                'error': 'Ошибка обработки файла'
-            }), 500
+        logger.info(f"Prediction for '{filename}': {prob:.6f}")
+        return jsonify(result=prob), 200
 
-        # Возвращаем результат
-        result = prediction_dict[1]
+    except ClientError as ce:
+        code = ce.response.get("Error", {}).get("Code")
+        if code in ("NoSuchKey", "404"):
+            logger.warning(f"S3 object not found for filename='{filename}': {code}")
+            return jsonify(error="file not found in S3"), 404
+        logger.error(f"S3 client error for '{filename}': {ce}")
+        return jsonify(error="S3 error"), 500
 
-        logger.info(f"Обработан файл {filename}, результат: {result}")
-
-        return jsonify({
-            'result': result,
-            'html_content': html_content
-        })
+    except BadRequest as br:
+        # На случай, если Flask бросит 400 самостоятельно
+        logger.error(f"Bad request: {br}")
+        return jsonify(error="bad request"), 400
 
     except Exception as e:
-        logger.error(f"Ошибка при обработке запроса: {e}")
-        return jsonify({
-            'error': 'Внутренняя ошибка сервера'
-        }), 500
+        logger.error(f"Internal error while processing '{filename}': {e}")
+        return jsonify(error="internal server error"), 500
 
 
 @app.route('/health', methods=['GET'])
