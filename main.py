@@ -1,4 +1,4 @@
-import torch  # TODO: занести импорты в requirements.txt
+import torch
 from botocore.exceptions import ClientError
 from torch.nn import MSELoss
 from monai.transforms import (
@@ -11,7 +11,7 @@ from monai.data import PydicomReader
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go  # Для интерактивной визуализации
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import logging
 
 from werkzeug.exceptions import BadRequest
@@ -268,41 +268,41 @@ def getPrediction(filename: str) -> float:
             safe_rmtree(unzip_path)
 
 
-@app.route('/prediction/<string:filename>', methods=['GET'])
-def get_prediction(filename: str):
+@app.route('/prediction', methods=['POST'])
+def get_prediction():
     """
-    GET /prediction/<filename>
-    filename — имя файла в S3 бакете (без .zip);
-               если пришло с .zip — суффикс будет отброшен.
+    POST /prediction
+    Body: { "filename": <string> } — имя zip-файла в бакете S3 (суффикс .zip необязателен).
 
     Response (200):
       { "result": <float 0..1> }
 
     Errors:
-      400 — некорректное имя
+      400 — некорректный запрос
       404 — файл не найден в S3
-      500 — иные ошибки обработки
+      500 — внутренняя ошибка сервиса
     """
     try:
-        if not filename:
-            return jsonify(error="filename is required"), 400
+        payload = request.get_json(silent=True) or {}
+        filename = payload.get('filename')
 
-        # Отрежем .zip, если прислали
+        if not isinstance(filename, str) or not filename.strip():
+            return jsonify(error="filename is required"), 400
+        filename = filename.strip()
+
         if filename.lower().endswith(".zip"):
             filename = filename[:-4]
 
-        # Запускаем инференс по имени (скачает <filename>.zip из S3)
         prediction = getPrediction(filename)
 
-        # Валидация результата
         try:
             prob = float(prediction)
         except (TypeError, ValueError):
-            logger.error(f"Неверный формат ответа getPrediction: {prediction!r}")
+            logger.error(f"Некорректный формат результата getPrediction: {prediction!r}")
             return jsonify(error="prediction format error"), 500
 
         if not (0.0 <= prob <= 1.0):
-            logger.error(f"Выход за диапазон вероятности: {prob}")
+            logger.error(f"Результат вне допустимого диапазона: {prob}")
             return jsonify(error="prediction out of range"), 500
 
         logger.info(f"Prediction for '{filename}': {prob:.6f}")
@@ -317,7 +317,6 @@ def get_prediction(filename: str):
         return jsonify(error="S3 error"), 500
 
     except BadRequest as br:
-        # На случай, если Flask бросит 400 самостоятельно
         logger.error(f"Bad request: {br}")
         return jsonify(error="bad request"), 400
 

@@ -5,11 +5,11 @@ from utils import *
 
 
 def save_visuals_to_s3(
-    s3,
-    bucket: str,
-    prefix: str,
-    image_np: np.ndarray, # [1, 1, H, W, D]
-    error_np: np.ndarray  # [1, 1, H, W, D]
+        s3,
+        bucket: str,
+        prefix: str,
+        image_np: np.ndarray,  # [1, 1, H, W, D]
+        error_np: np.ndarray  # [1, 1, H, W, D]
 ) -> List[str]:
     """
     Сохраняет для КАЖДОГО среза по оси D один PNG-оверлей:
@@ -35,8 +35,8 @@ def save_visuals_to_s3(
     if D <= 0:
         raise ValueError("Пустой объём: D == 0")
 
-    base_vol = image_np[0, 0]   # [H, W, D]
-    err_vol  = error_np[0, 0]   # [H, W, D]
+    base_vol = image_np[0, 0]  # [H, W, D]
+    err_vol = error_np[0, 0]  # [H, W, D]
 
     # ---- глобальная нормализация по объёму (чтобы яркость не 'прыгала' между срезами) ----
     def _robust_minmax(vol: np.ndarray, low=1, high=99):
@@ -51,14 +51,14 @@ def save_visuals_to_s3(
         return float(vmin), float(vmax)
 
     base_vmin, base_vmax = _robust_minmax(base_vol, 1, 99)
-    err_vmin,  err_vmax  = _robust_minmax(err_vol,  1, 99)
+    err_vmin, err_vmax = _robust_minmax(err_vol, 1, 99)
 
     saved_keys: List[str] = []
 
     # ---- генерация и загрузка PNG для каждого среза ----
     for i in range(D):
         base_slice = base_vol[:, :, i]
-        err_slice  = err_vol[:,  :, i]
+        err_slice = err_vol[:, :, i]
 
         # нормализация ошибки в [0,1] для корректной теплокарты
         if err_vmax - err_vmin < 1e-9:
@@ -79,7 +79,7 @@ def save_visuals_to_s3(
         plt.close()
         buf.seek(0)
 
-        key = f"{prefix}/{i+1}.png"
+        key = f"{prefix}/{i + 1}.png"
         try:
             upload_bytes(
                 s3,

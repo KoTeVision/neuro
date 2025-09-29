@@ -74,5 +74,11 @@ def error_to_probability(error_value: float, threshold: float, tau: float = None
 
 
 def upload_bytes(s3, bucket: str, key: str, data: bytes, content_type: str = "application/octet-stream"):
-    s3.put_object(Bucket=bucket, Key=key, Body=data, ContentType=content_type)
+    s3.put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=data,
+        ContentType=content_type,
+        ACL="public-read",
+    )
 
