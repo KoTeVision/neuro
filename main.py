@@ -10,11 +10,6 @@ from monai.inferers import sliding_window_inference
 from monai.data import PydicomReader
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go  # Для интерактивной визуализации
-from pathlib import Path
-
-import pydicom
-from pydicom.errors import InvalidDicomError
-from typing import List
 
 
 from flask import Flask, jsonify, request
