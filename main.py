@@ -10,6 +10,12 @@ from monai.inferers import sliding_window_inference
 from monai.data import PydicomReader
 import matplotlib.pyplot as plt
 import plotly.graph_objects as go  # Для интерактивной визуализации
+from pathlib import Path
+
+import pydicom
+from pydicom.errors import InvalidDicomError
+from typing import List
+
 
 from flask import Flask, jsonify, request
 import logging
@@ -81,9 +87,10 @@ transforms = Compose([
     ToTensord(keys=['image'])
 ])
 
+
 s3 = get_s3_client()
 
-# Функция для наложения маски на срез с прозрачностью
+
 def overlay_mask_on_slice(slice_img, slice_mask, alpha=0.5):
     """
     Накладывает маску (error_map) на срез изображения в красных оттенках с прозрачностью.
@@ -210,10 +217,16 @@ def getPrediction(filename: str) -> float:
         unzip_path = unzip_to_temp(local_zip_path)
 
         # 3) Подготовка данных (используем unzip_path как test_scan_path)
-        test_data = [{'image': unzip_path}]
+        # Найти папку с .dcm
+        dicom_dir = find_dicom_dir(unzip_path)
+
+        # Подготовка данных (используем unzip_path как test_scan_path)
+        test_data = [{'image': dicom_dir}]
         transformed_data = transforms(test_data[0])
         image = transformed_data['image'].unsqueeze(0).to(device)  # [1, 1, H, W, D]
+#
 
+        logger.info("start neuro process")
         # 4) Sliding window inference
         with torch.no_grad():
             reconstructed = sliding_window_inference(
@@ -246,7 +259,6 @@ def getPrediction(filename: str) -> float:
         if 'logger' in globals() and logger:
             logger.info(
                 f"Готово: filename={filename}, error={error:.6f}, probability={probability_pathology:.6f}, "
-                f"S3: s3://{S3_BUCKET_NAME}/{s3_prefix}/visualization.html"
             )
 
         return probability_pathology

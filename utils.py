@@ -46,9 +46,60 @@ def unzip_to_temp(zip_path: str) -> str:
     Распаковывает zip в отдельную временную папку и возвращает путь к ней.
     """
     target_dir = tempfile.mkdtemp(prefix="kote_unzip_")
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(target_dir)
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        # Извлекаем только не-__MACOSX
+            for member in zip_ref.namelist():
+                if '__MACOSX' not in member:
+                    zip_ref.extract(member, target_dir)
+
+    # Рекурсивно удаляем __MACOSX, если она создалась
+    for root, dirs, files in os.walk(target_dir, topdown=False):
+        if '__MACOSX' in root:
+            shutil.rmtree(root)
+            print(f"Удалена папка __MACOSX: {root}")  # Дебаггинг
+
     return target_dir
+
+
+def find_dicom_dir(unzip_path: str) -> str:
+    """
+    Находит папку с .dcm файлами внутри unzip_path, включая корень и первую вложенную папку.
+    """
+    # Проверяем корень
+    root_files = os.listdir(unzip_path)
+    dcm_files_root = [f for f in root_files if f.lower().endswith('.dcm')]
+    if dcm_files_root:
+        print(f"Найдена DICOM в корне: {unzip_path} с {len(dcm_files_root)} файлами")  # Дебаггинг
+        return unzip_path
+
+    # Проверяем первую вложенную папку (если корень — только папки)
+    subdirs = [d for d in root_files if os.path.isdir(os.path.join(unzip_path, d)) and '__MACOSX' not in d]
+    if subdirs:
+        first_subdir = os.path.join(unzip_path, subdirs[0])
+        subdir_files = os.listdir(first_subdir)
+        dcm_files_subdir = [f for f in subdir_files if f.lower().endswith('.dcm')]
+        if dcm_files_subdir:
+            print(f"Найден DICOM в подпапке: {first_subdir} с {len(dcm_files_subdir)} файлами")  # Дебаггинг
+            return first_subdir
+
+    # Рекурсивный поиск в случае неудачи (для сложных структур)
+    for root, dirs, files in os.walk(unzip_path):
+        # Пропускаем служебные папки macOS
+        if '__MACOSX' in root:
+            continue
+        try:
+            root_decoded = os.fsdecode(root).decode('utf-8', errors='ignore')
+            print(f"Проверяем папку: {root_decoded}")  # Дебаггинг
+        except:
+            root_decoded = root
+            continue  # Пропускаем повреждённые пути
+
+        dcm_files = [f for f in files if f.lower().endswith('.dcm')]
+        if dcm_files:
+            print(f"Найдена DICOM-папка: {root_decoded} с {len(dcm_files)} файлами")  # Дебаггинг
+            return root_decoded
+
+    raise ValueError("Не найдено .dcm файлов в ZIP-архиве.")
 
 
 def safe_rmtree(path: str):
