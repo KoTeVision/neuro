@@ -53,7 +53,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model_dict = model.state_dict()  # Текущий state_dict модели
 pretrained_dict = torch.load(
     model_path,
-    map_location=torch.device('cpu'),
+    map_location=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
     weights_only=True
 )  # Загружаем обученный state_dict
 
